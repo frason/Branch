@@ -2,3 +2,8 @@ node_modules/
 dist/
 .env
 .env.*
+
+# Playwright test results / traces (browsers are installed outside the repo
+# by default under ~/.cache/ms-playwright — no entry needed here for those)
+test-results/
+playwright-report/
