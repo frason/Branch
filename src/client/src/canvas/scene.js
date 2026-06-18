@@ -73,10 +73,16 @@ export function initScene(canvas) {
     "ortho-cam",
     -Math.PI / 2,
     Math.PI / 2,
-    1, // radius is irrelevant in ortho mode but must be > 0
+    10, // pulled back so the node sits comfortably inside the near/far planes
     Vector3.Zero(),
     scene
   );
+
+  // In orthographic mode the projection is governed by orthoLeft/Right/Top/
+  // Bottom, but the near/far clip planes still apply along the view axis. Use
+  // generous bounds so node cards (and future depth/layering) never clip.
+  camera.minZ = 0.01;
+  camera.maxZ = 1000;
 
   // Fixed ortho bounds — centred on origin, 800×600 world units visible.
   // These values are intentionally wider than a single node so there is
@@ -157,13 +163,16 @@ export function addNodeMesh(scene, nodeData) {
 
   mesh.position.set(t.x, t.y, t.z);
 
-  // Placeholder material — mid-grey card with a subtle purple tint.
-  // Replace with an image texture (StandardMaterial.diffuseTexture) once
-  // the image generation pipeline is wired up.
+  // Placeholder material — flat purple-grey card. Rendered UNLIT (emissive
+  // fill + disableLighting) so it reads consistently regardless of light
+  // angle: a 2D card's camera-facing normal is perpendicular to any overhead
+  // light, which would otherwise leave it nearly black. When the image
+  // pipeline lands, swap emissiveTexture in for the generated image.
   const mat = new StandardMaterial(`mat-${nodeData.id}`, scene);
-  mat.diffuseColor = new Color3(0.22, 0.18, 0.3); // muted purple-grey
-  mat.emissiveColor = new Color3(0.08, 0.06, 0.12); // slight glow so it reads on dark bg
+  mat.emissiveColor = new Color3(0.42, 0.36, 0.55); // flat purple-grey fill
+  mat.diffuseColor = Color3.Black();
   mat.specularColor = Color3.Black(); // flat, no specular highlights
+  mat.disableLighting = true; // unlit — color comes purely from emissive
   mesh.material = mat;
 
   return mesh;
