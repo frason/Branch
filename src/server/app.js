@@ -1,4 +1,5 @@
 import express from "express";
+import treesRouter from "./routes/trees.js";
 
 export function createApp() {
   const app = express();
@@ -14,6 +15,9 @@ export function createApp() {
       timestamp: new Date().toISOString(),
     });
   });
+
+  // API routes — must come before the catch-all 404
+  app.use(treesRouter);
 
   // 404 handler — must come after all routes
   app.use((_req, res) => {
