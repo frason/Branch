@@ -9,10 +9,12 @@
   "scripts": {
     "start": "node src/server/index.js",
     "dev": "node --watch src/server/index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "migrate": "node src/server/db/migrate.js"
   },
   "dependencies": {
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "pg": "^8.21.0"
   },
   "devDependencies": {
     "supertest": "^7.0.0"
