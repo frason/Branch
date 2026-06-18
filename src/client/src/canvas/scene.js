@@ -2,7 +2,7 @@
  * scene.js
  *
  * Babylon.js scene bootstrap — engine creation, camera setup, render loop,
- * and the single-node mesh factory.
+ * and the node mesh factory.
  *
  * This module is intentionally a plain JS module with NO React imports.
  * The React component (BabylonCanvas.jsx) owns the <canvas> DOM node and
@@ -10,7 +10,7 @@
  * cleanly without React needing to know about it.
  *
  * Scaling path:
- *   - `createNodeMesh` will be called once per node; keep it cheap.
+ *   - `addNodeMesh` will be called once per node; keep it cheap.
  *   - For 100+ nodes use an InstancedMesh (clone the root mesh).
  *   - Edges can be added as Line systems in a dedicated `edgeLayer.js`.
  *   - Pan/zoom maps to camera.orthoLeft/Right/Top/Bottom updates.
@@ -28,15 +28,49 @@ import {
   Color4,
 } from "@babylonjs/core";
 
-import { computeNodeTransform } from "./nodeHelpers.js";
+import { computeNodeTransform, NODE_DEFAULTS } from "./nodeHelpers.js";
+
+// ---------------------------------------------------------------------------
+// Layout helper — simple index-based grid placement so N nodes don't overlap.
+// Multi-node layout with edges is issue #16; this is just a deterministic
+// placeholder so the canvas renders whatever the store gives us.
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive a canvas (x, y) position for a backend node from its index in the
+ * list.  Uses a horizontal strip with constant spacing.
+ *
+ * @param {object} node  backend node row
+ * @param {number} index position in the array
+ * @returns {{ id: string, x: number, y: number }}
+ */
+function layoutNode(node, index) {
+  const SPACING = NODE_DEFAULTS.width + 40; // gap between card centres
+  const COLS = 4;
+  const col = index % COLS;
+  const row = Math.floor(index / COLS);
+  return {
+    id: node.id,
+    x: col * SPACING - (COLS - 1) * SPACING * 0.5,
+    y: -row * (NODE_DEFAULTS.height + 40),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Placeholder (fallback) node shown when the API is unreachable
+// ---------------------------------------------------------------------------
+const FALLBACK_NODE = { id: "node-0", x: 0, y: 0 };
 
 /**
  * Bootstrap a Babylon engine + scene on the given canvas element.
  *
- * Returns a teardown function; call it on React component unmount.
+ * Returns:
+ *   - dispose()   — call on React component unmount
+ *   - setNodes(nodesArray) — replace ALL rendered nodes from backend data.
+ *     Pass an empty array (or omit call) to keep the fallback placeholder.
  *
  * @param {HTMLCanvasElement} canvas
- * @returns {{ dispose: () => void }}
+ * @returns {{ dispose: () => void, setNodes: (nodes: object[]) => void }}
  */
 export function initScene(canvas) {
   // ------------------------------------------------------------------
@@ -84,7 +118,7 @@ export function initScene(canvas) {
   camera.minZ = 0.01;
   camera.maxZ = 1000;
 
-  // Fixed ortho bounds — centred on origin, 800×600 world units visible.
+  // Fixed ortho bounds — centred on origin, 800×800 world units visible.
   // These values are intentionally wider than a single node so there is
   // breathing room; later pan/zoom changes these at runtime.
   const VIEW_HALF_W = 400;
@@ -104,9 +138,52 @@ export function initScene(canvas) {
   light.intensity = 1.0;
 
   // ------------------------------------------------------------------
-  // Single static node mesh
+  // Node mesh tracking — keep refs so setNodes can clean up
   // ------------------------------------------------------------------
-  addNodeMesh(scene, { id: "node-0", x: 0, y: 0 });
+  /** @type {Map<string, import("@babylonjs/core").Mesh>} */
+  const meshMap = new Map();
+
+  /**
+   * Remove all current node meshes from the scene.
+   */
+  function clearNodeMeshes() {
+    for (const mesh of meshMap.values()) {
+      mesh.material?.dispose();
+      mesh.dispose();
+    }
+    meshMap.clear();
+  }
+
+  // ------------------------------------------------------------------
+  // Render the fallback placeholder until setNodes is called
+  // ------------------------------------------------------------------
+  const fallbackMesh = addNodeMesh(scene, FALLBACK_NODE);
+  meshMap.set(FALLBACK_NODE.id, fallbackMesh);
+
+  // ------------------------------------------------------------------
+  // setNodes — replaces rendered nodes from backend data.
+  // If nodes is empty or not provided, re-renders the fallback.
+  // ------------------------------------------------------------------
+
+  /**
+   * @param {object[]} nodes  array of backend node rows
+   */
+  function setNodes(nodes) {
+    clearNodeMeshes();
+
+    if (!nodes || nodes.length === 0) {
+      // Fall back to the placeholder node
+      const mesh = addNodeMesh(scene, FALLBACK_NODE);
+      meshMap.set(FALLBACK_NODE.id, mesh);
+      return;
+    }
+
+    nodes.forEach((node, index) => {
+      const layoutData = layoutNode(node, index);
+      const mesh = addNodeMesh(scene, layoutData);
+      meshMap.set(layoutData.id, mesh);
+    });
+  }
 
   // ------------------------------------------------------------------
   // Render loop
@@ -125,9 +202,11 @@ export function initScene(canvas) {
   // Teardown
   // ------------------------------------------------------------------
   return {
+    setNodes,
     dispose() {
       window.removeEventListener("resize", handleResize);
       engine.stopRenderLoop();
+      clearNodeMeshes();
       scene.dispose();
       engine.dispose();
     },
