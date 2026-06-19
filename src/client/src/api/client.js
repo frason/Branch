@@ -191,3 +191,33 @@ export async function createNode(
 export async function getNode(id, { signal } = {}) {
   return request(`/api/nodes/${encodeURIComponent(id)}`, { signal });
 }
+
+/**
+ * Trigger generation for a tree node via the mock adapter.
+ *
+ * On success returns { node, cost: { credits, currency } }.
+ * On failure (including 502 from the adapter) the shared request() wrapper
+ * throws an Error with .status and the server's error message — callers
+ * should catch and display that message.
+ *
+ * @param {string} treeId
+ * @param {{ branchId: string, prompt?: string, parentId?: string|null,
+ *           settings?: object }} opts
+ * @param {{ signal?: AbortSignal }} [reqOpts]
+ * @returns {Promise<{ node: Node, cost: { credits: number, currency: string } }>}
+ */
+export async function generate(
+  treeId,
+  { branchId, prompt, parentId, settings },
+  { signal } = {}
+) {
+  const body = { branchId };
+  if (prompt !== undefined) body.prompt = prompt;
+  if (parentId !== undefined) body.parentId = parentId;
+  if (settings !== undefined) body.settings = settings;
+  return request(`/api/trees/${encodeURIComponent(treeId)}/generate`, {
+    method: "POST",
+    body: JSON.stringify(body),
+    signal,
+  });
+}
