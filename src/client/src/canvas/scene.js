@@ -27,34 +27,9 @@ import {
   Color3,
   Color4,
 } from "@babylonjs/core";
+// Color3 is used for node materials; Color4 used for scene clear and line colors.
 
-import { computeNodeTransform, NODE_DEFAULTS } from "./nodeHelpers.js";
-
-// ---------------------------------------------------------------------------
-// Layout helper — simple index-based grid placement so N nodes don't overlap.
-// Multi-node layout with edges is issue #16; this is just a deterministic
-// placeholder so the canvas renders whatever the store gives us.
-// ---------------------------------------------------------------------------
-
-/**
- * Derive a canvas (x, y) position for a backend node from its index in the
- * list.  Uses a horizontal strip with constant spacing.
- *
- * @param {object} node  backend node row
- * @param {number} index position in the array
- * @returns {{ id: string, x: number, y: number }}
- */
-function layoutNode(node, index) {
-  const SPACING = NODE_DEFAULTS.width + 40; // gap between card centres
-  const COLS = 4;
-  const col = index % COLS;
-  const row = Math.floor(index / COLS);
-  return {
-    id: node.id,
-    x: col * SPACING - (COLS - 1) * SPACING * 0.5,
-    y: -row * (NODE_DEFAULTS.height + 40),
-  };
-}
+import { computeNodeTransform, computeTreeLayout, NODE_DEFAULTS } from "./nodeHelpers.js";
 
 // ---------------------------------------------------------------------------
 // Placeholder (fallback) node shown when the API is unreachable
@@ -138,10 +113,22 @@ export function initScene(canvas) {
   light.intensity = 1.0;
 
   // ------------------------------------------------------------------
-  // Node mesh tracking — keep refs so setNodes can clean up
+  // Node mesh tracking — keep refs so setNodes can clean up.
+  // Edge meshes are tracked separately so they can be disposed cleanly
+  // without touching node geometry.
+  //
+  // SCALING NOTE: When node count grows to 100+, convert to instancing:
+  //   const rootMesh = addNodeMesh(scene, firstNode);
+  //   const instance = rootMesh.createInstance(node.id);
+  //   instance.position.set(x, y, 0);
+  // That shares one geometry buffer on the GPU instead of N buffers.
   // ------------------------------------------------------------------
+
   /** @type {Map<string, import("@babylonjs/core").Mesh>} */
   const meshMap = new Map();
+
+  /** @type {import("@babylonjs/core").Mesh[]} */
+  let edgeMeshes = [];
 
   /**
    * Remove all current node meshes from the scene.
@@ -152,6 +139,17 @@ export function initScene(canvas) {
       mesh.dispose();
     }
     meshMap.clear();
+  }
+
+  /**
+   * Remove all current edge line meshes from the scene.
+   * CreateLines does not create a material, so just dispose the mesh.
+   */
+  function clearEdgeMeshes() {
+    for (const mesh of edgeMeshes) {
+      mesh.dispose();
+    }
+    edgeMeshes = [];
   }
 
   // ------------------------------------------------------------------
@@ -170,6 +168,7 @@ export function initScene(canvas) {
    */
   function setNodes(nodes) {
     clearNodeMeshes();
+    clearEdgeMeshes();
 
     if (!nodes || nodes.length === 0) {
       // Fall back to the placeholder node
@@ -178,11 +177,31 @@ export function initScene(canvas) {
       return;
     }
 
-    nodes.forEach((node, index) => {
-      const layoutData = layoutNode(node, index);
+    // Compute tree layout — pure function, no Babylon dependency.
+    // Each entry in layoutMap is { x, y } in world space.
+    const layoutMap = computeTreeLayout(nodes);
+
+    // Render node cards
+    for (const node of nodes) {
+      const pos = layoutMap.get(node.id) ?? { x: 0, y: 0 };
+      const layoutData = { id: node.id, x: pos.x, y: pos.y };
       const mesh = addNodeMesh(scene, layoutData);
-      meshMap.set(layoutData.id, mesh);
-    });
+      meshMap.set(node.id, mesh);
+    }
+
+    // Render edges: one line per child→parent pair.
+    // Only nodes with a parent_id that exists in the current set get an edge.
+    const nodeIdSet = new Set(nodes.map((n) => n.id));
+    for (const node of nodes) {
+      if (!node.parent_id || !nodeIdSet.has(node.parent_id)) continue;
+
+      const childPos  = layoutMap.get(node.id);
+      const parentPos = layoutMap.get(node.parent_id);
+      if (!childPos || !parentPos) continue;
+
+      const edgeMesh = addEdgeMesh(scene, childPos, parentPos, node.id);
+      edgeMeshes.push(edgeMesh);
+    }
   }
 
   // ------------------------------------------------------------------
@@ -207,6 +226,7 @@ export function initScene(canvas) {
       window.removeEventListener("resize", handleResize);
       engine.stopRenderLoop();
       clearNodeMeshes();
+      clearEdgeMeshes();
       scene.dispose();
       engine.dispose();
     },
@@ -255,4 +275,45 @@ export function addNodeMesh(scene, nodeData) {
   mesh.material = mat;
 
   return mesh;
+}
+
+/**
+ * Draw a line edge connecting two node centers (child → parent).
+ *
+ * Uses MeshBuilder.CreateLines which produces a LinesMesh — no material
+ * is created, so disposal is simply mesh.dispose() with no material leak.
+ *
+ * The line is rendered at z = -0.5 (slightly in front of node cards at z=0
+ * in the camera's -Z view direction) so it doesn't z-fight the card faces.
+ *
+ * Color: mid-grey (0.45, 0.45, 0.45) — subtle so nodes remain the focus.
+ *
+ * @param {Scene} scene
+ * @param {{ x: number, y: number }} childPos   world position of the child node
+ * @param {{ x: number, y: number }} parentPos  world position of the parent node
+ * @param {string} childId  used to name the mesh (must be unique per edge)
+ * @returns {import("@babylonjs/core").LinesMesh}
+ */
+export function addEdgeMesh(scene, childPos, parentPos, childId) {
+  const EDGE_Z = -0.5; // in front of cards so it's never occluded
+
+  const points = [
+    new Vector3(childPos.x,  childPos.y,  EDGE_Z),
+    new Vector3(parentPos.x, parentPos.y, EDGE_Z),
+  ];
+
+  const lineMesh = MeshBuilder.CreateLines(
+    `edge-${childId}`,
+    {
+      points,
+      updatable: false,
+      colors: [
+        new Color4(0.45, 0.45, 0.45, 1),
+        new Color4(0.45, 0.45, 0.45, 1),
+      ],
+    },
+    scene
+  );
+
+  return lineMesh;
 }
