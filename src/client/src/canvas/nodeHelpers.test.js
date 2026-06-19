@@ -7,6 +7,7 @@ import {
   NODE_DEFAULTS,
   computeNodeTransform,
   computeOrthoFrustum,
+  computeTreeLayout,
 } from "./nodeHelpers.js";
 
 // ---------------------------------------------------------------------------
@@ -94,5 +95,161 @@ describe("computeOrthoFrustum", () => {
     const f = computeOrthoFrustum([{ x: 500, y: -300 }]);
     expect(f.left).toBeLessThan(f.right);
     expect(f.bottom).toBeLessThan(f.top);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeTreeLayout
+// ---------------------------------------------------------------------------
+
+describe("computeTreeLayout", () => {
+  it("returns an empty Map for an empty input", () => {
+    const result = computeTreeLayout([]);
+    expect(result.size).toBe(0);
+  });
+
+  it("places a single node at the origin (x≈0, y≈0)", () => {
+    const result = computeTreeLayout([{ id: "a", parent_id: null }]);
+    expect(result.size).toBe(1);
+    const pos = result.get("a");
+    expect(pos.x).toBeCloseTo(0);
+    expect(pos.y).toBeCloseTo(0);
+  });
+
+  it("places two siblings (same null parent) at the same depth (y) with distinct x", () => {
+    const nodes = [
+      { id: "root", parent_id: null },
+      { id: "a",    parent_id: null },
+    ];
+    const result = computeTreeLayout(nodes);
+    const rootPos = result.get("root");
+    const aPos    = result.get("a");
+    expect(rootPos.y).toBeCloseTo(aPos.y); // same depth level
+    expect(rootPos.x).not.toBeCloseTo(aPos.x); // distinct horizontal positions
+    // Must not overlap: gap >= NODE_DEFAULTS.width
+    expect(Math.abs(rootPos.x - aPos.x)).toBeGreaterThanOrEqual(NODE_DEFAULTS.width);
+  });
+
+  it("positions a child at a greater depth (lower y) than its parent", () => {
+    const nodes = [
+      { id: "root",  parent_id: null },
+      { id: "child", parent_id: "root" },
+    ];
+    const result = computeTreeLayout(nodes);
+    const rootPos  = result.get("root");
+    const childPos = result.get("child");
+    // Roots are at y=0; children have negative y (downward on canvas)
+    expect(rootPos.y).toBeGreaterThan(childPos.y);
+  });
+
+  it("produces increasing depth for a root→child→grandchild chain", () => {
+    const nodes = [
+      { id: "root",  parent_id: null },
+      { id: "child", parent_id: "root" },
+      { id: "grand", parent_id: "child" },
+    ];
+    const result = computeTreeLayout(nodes);
+    const yRoot  = result.get("root").y;
+    const yChild = result.get("child").y;
+    const yGrand = result.get("grand").y;
+    expect(yRoot).toBeGreaterThan(yChild);
+    expect(yChild).toBeGreaterThan(yGrand);
+  });
+
+  it("roots with null parent_id are at the top level (y = 0)", () => {
+    const nodes = [
+      { id: "r1", parent_id: null },
+      { id: "r2", parent_id: null },
+    ];
+    const result = computeTreeLayout(nodes);
+    expect(result.get("r1").y).toBeCloseTo(0);
+    expect(result.get("r2").y).toBeCloseTo(0);
+  });
+
+  it("is deterministic — same input always produces same output", () => {
+    const nodes = [
+      { id: "root",  parent_id: null },
+      { id: "childA", parent_id: "root" },
+      { id: "childB", parent_id: "root" },
+    ];
+    const r1 = computeTreeLayout(nodes);
+    const r2 = computeTreeLayout(nodes);
+    for (const node of nodes) {
+      expect(r1.get(node.id).x).toBe(r2.get(node.id).x);
+      expect(r1.get(node.id).y).toBe(r2.get(node.id).y);
+    }
+  });
+
+  it("siblings under a parent do not overlap (gap >= node width)", () => {
+    const nodes = [
+      { id: "root",   parent_id: null },
+      { id: "childA", parent_id: "root" },
+      { id: "childB", parent_id: "root" },
+    ];
+    const result = computeTreeLayout(nodes);
+    const xA = result.get("childA").x;
+    const xB = result.get("childB").x;
+    expect(Math.abs(xA - xB)).toBeGreaterThanOrEqual(NODE_DEFAULTS.width);
+  });
+
+  it("centers the layout so the root of a single-root tree is at x≈0", () => {
+    const nodes = [
+      { id: "root",   parent_id: null },
+      { id: "childA", parent_id: "root" },
+      { id: "childB", parent_id: "root" },
+    ];
+    const result = computeTreeLayout(nodes);
+    // Root should be centered between its two children
+    const xRoot  = result.get("root").x;
+    const xA     = result.get("childA").x;
+    const xB     = result.get("childB").x;
+    expect(xRoot).toBeCloseTo((xA + xB) / 2);
+    // And the whole tree is roughly centered around 0
+    expect((xA + xB) / 2).toBeCloseTo(0, 5);
+  });
+
+  it("ignores parent_id references that point to nodes not in the set", () => {
+    // parent_id "ghost" doesn't exist in the node list — treat as a root
+    const nodes = [{ id: "orphan", parent_id: "ghost" }];
+    const result = computeTreeLayout(nodes);
+    expect(result.size).toBe(1);
+    expect(result.get("orphan").x).toBeCloseTo(0);
+    expect(result.get("orphan").y).toBeCloseTo(0);
+  });
+
+  it("handles a parent_id cycle without crashing or producing NaN", () => {
+    // A↔B mutually reference each other — a malformed (cyclic) input.
+    // Every node must still get a finite position (no silent collapse/NaN).
+    const nodes = [
+      { id: "A", parent_id: "B" },
+      { id: "B", parent_id: "A" },
+    ];
+    const result = computeTreeLayout(nodes);
+    expect(result.size).toBe(2);
+    for (const id of ["A", "B"]) {
+      const p = result.get(id);
+      expect(Number.isFinite(p.x)).toBe(true);
+      expect(Number.isFinite(p.y)).toBe(true);
+    }
+  });
+
+  it("lays out two disconnected root→child chains without horizontal overlap", () => {
+    const nodes = [
+      { id: "r1", parent_id: null },
+      { id: "c1", parent_id: "r1" },
+      { id: "r2", parent_id: null },
+      { id: "c2", parent_id: "r2" },
+    ];
+    const result = computeTreeLayout(nodes);
+    expect(result.size).toBe(4);
+    // The two chains occupy distinct horizontal space (no collision).
+    const xs = [...result.values()].map((p) => p.x);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    expect(maxX - minX).toBeGreaterThan(0);
+    // Each child sits directly under its own root (same x as its root).
+    expect(result.get("c1").x).toBeCloseTo(result.get("r1").x);
+    expect(result.get("c2").x).toBeCloseTo(result.get("r2").x);
+    expect(result.get("r1").x).not.toBeCloseTo(result.get("r2").x);
   });
 });
