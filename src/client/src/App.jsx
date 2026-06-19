@@ -13,6 +13,7 @@
 
 import { useEffect } from "react";
 import { BabylonCanvas } from "./canvas/BabylonCanvas.jsx";
+import { GeneratePanel } from "./ui/GeneratePanel.jsx";
 import { TreeProvider, useTreeActions } from "./state/treeStore.jsx";
 
 const styles = {
@@ -40,6 +41,7 @@ function AppInner() {
   return (
     <div style={styles.app}>
       <BabylonCanvas />
+      <GeneratePanel />
     </div>
   );
 }

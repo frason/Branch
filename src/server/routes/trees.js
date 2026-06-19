@@ -9,6 +9,7 @@
 
 import { Router } from "express";
 import { getRepo, NotFoundError } from "../repo/index.js";
+import { createAdapter, GenerationError } from "../generation/index.js";
 
 const router = Router();
 
@@ -150,6 +151,128 @@ router.get(
       }
       next(err);
     }
+  })
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/trees/:treeId/generate
+// Body: { branchId (required), prompt?, parentId?, settings? }
+//
+// Validates the request (tree exists, branchId present + belongs to tree,
+// parentId exists if provided), calls the generation adapter, and on success
+// persists a node with status='done', assetUrl, and cost merged into settings.
+//
+// Responses:
+//   201 { node, cost }         — generation succeeded; node persisted
+//   400 { error }              — validation failure (missing/bad branchId, parentId)
+//   404 { error }              — treeId not found
+//   502 { error, cost }        — generation failed (adapter returned status:'failed')
+//   500                        — unexpected error via next(err)
+// ---------------------------------------------------------------------------
+router.post(
+  "/api/trees/:treeId/generate",
+  asyncHandler(async (req, res, next) => {
+    const { treeId } = req.params;
+    const { branchId, parentId, prompt, settings } = req.body ?? {};
+
+    // Validate branchId presence before touching the adapter.
+    if (branchId == null || String(branchId).trim() === "") {
+      return res.status(400).json({ error: "branchId is required" });
+    }
+
+    const repo = getRepo();
+
+    // Run a dry-run createNode to validate treeId, branchId, and parentId.
+    // We piggy-back on the existing repo validation rather than duplicating it.
+    // We'll do this by attempting a real createNode later on success, so for
+    // now validate via getTree / branch membership up front.
+    //
+    // The simplest approach: attempt the real createNode at the end (on success)
+    // and let repo validation errors surface naturally.  For the failure path we
+    // still need to validate BEFORE calling the adapter so validation errors
+    // take precedence.  We'll do a lightweight probe: call createNode with a
+    // sentinel, catch validation errors, then roll it back... but MemoryRepo has
+    // no transactions.
+    //
+    // Better: the repo exposes getTree which throws NotFoundError(resource='tree')
+    // when the tree is missing.  Then we inspect the tree's branches to validate
+    // branchId, and nodes to validate parentId.  This mirrors what createNode
+    // does internally and avoids touching the adapter for invalid input.
+
+    try {
+      const tree = await repo.getTree(treeId);
+
+      // branchId must belong to this tree
+      const branchExists = tree.branches.some(
+        (b) => String(b.id) === String(branchId)
+      );
+      if (!branchExists) {
+        return res
+          .status(400)
+          .json({ error: `Branch ${branchId} does not belong to tree ${treeId}` });
+      }
+
+      // parentId (if given) must exist on this tree
+      if (parentId != null) {
+        const parentExists = tree.nodes.some(
+          (n) => String(n.id) === String(parentId)
+        );
+        if (!parentExists) {
+          return res
+            .status(400)
+            .json({ error: `Parent node ${parentId} does not exist on tree ${treeId}` });
+        }
+      }
+    } catch (err) {
+      if (err instanceof NotFoundError && err.resource === "tree") {
+        return res.status(404).json({ error: err.message });
+      }
+      return next(err);
+    }
+
+    // All validation passed — call the adapter.
+    const adapter = createAdapter();
+    let result;
+    try {
+      result = await adapter.generate(
+        { prompt: prompt ?? null, settings: settings ?? {} },
+        { pollIntervalMs: 5 }
+      );
+    } catch (err) {
+      // The adapter can THROW (e.g. GenerationError on timeout) rather than
+      // returning a 'failed' result. Surface that as a 502 generation failure,
+      // not an unhandled 500. Unexpected non-adapter errors still bubble to 500.
+      if (err instanceof GenerationError) {
+        return res
+          .status(502)
+          .json({ error: err.message ?? "generation failed", cost: { credits: 0 } });
+      }
+      return next(err);
+    }
+
+    // Persist only on a successful terminal result. Any other terminal status
+    // (failed / cancelled / unknown) is treated as a failure and NOT persisted.
+    if (result.status !== "succeeded") {
+      return res.status(502).json({
+        error: result.error?.message ?? `generation ${result.status}`,
+        cost: result.cost ?? { credits: 0 },
+      });
+    }
+
+    // Generation succeeded — persist the node.
+    const mergedSettings = { ...(settings ?? {}), cost_credits: result.cost.credits };
+
+    const node = await repo.createNode({
+      treeId,
+      branchId,
+      parentId: parentId ?? null,
+      prompt: prompt ?? null,
+      assetUrl: result.assetUrl,
+      settings: mergedSettings,
+      status: "done",
+    });
+
+    return res.status(201).json({ node, cost: result.cost });
   })
 );
 
