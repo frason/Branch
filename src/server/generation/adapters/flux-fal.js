@@ -36,6 +36,7 @@
 
 import { GenerationAdapter, GenerationError } from "../adapter.js";
 import { registerAdapter } from "../registry.js";
+import { CONTROL_TYPES, UNIVERSAL_KEYS } from "../settings.js";
 
 const FAL_QUEUE_BASE = "https://queue.fal.run";
 const DEFAULT_MODEL = "fal-ai/flux/dev";
@@ -58,6 +59,120 @@ export class FluxFalAdapter extends GenerationAdapter {
     this._creditsPerImage = config.creditsPerImage ?? DEFAULT_CREDITS_PER_IMAGE;
     // Injectable fetch: lets tests stub HTTP without any live network
     this._fetch = config.fetch ?? globalThis.fetch;
+  }
+
+  // ---------------------------------------------------------------------------
+  // getCapabilities
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Return the capabilities descriptor for the Flux fal.ai adapter.
+   *
+   * Universal controls supported by Flux dev:
+   *   - aspectRatio   — mapped to fal image_size enum presets.
+   *   - numImages     — num_images (fal supports 1..8).
+   *   - seed          — deterministic reproducibility seed.
+   *   - guidance      — guidance_scale (prompt adherence, default 3.5).
+   *   - steps         — num_inference_steps (quality/speed tradeoff, default 28).
+   *   NOTE: negativePrompt is NOT supported by Flux dev — omitted so UI won't show it.
+   *
+   * Advanced (Flux-specific) controls:
+   *   - model         — model variant (flux/dev | flux/schnell).
+   *   - outputFormat  — output image format (jpeg | png).
+   *   - enableSafetyChecker — content safety filtering toggle.
+   *   - acceleration  — inference speed mode (none | regular | high).
+   *
+   * @returns {import('../settings.js').AdapterCapabilities}
+   */
+  getCapabilities() {
+    return {
+      universal: {
+        [UNIVERSAL_KEYS.ASPECT_RATIO]: {
+          key: UNIVERSAL_KEYS.ASPECT_RATIO,
+          label: "Aspect ratio",
+          type: CONTROL_TYPES.ENUM,
+          options: ["1:1", "4:3", "3:4", "16:9", "9:16"],
+          default: "4:3",
+          help: "Output image aspect ratio. Mapped to fal image_size presets.",
+        },
+        [UNIVERSAL_KEYS.NUM_IMAGES]: {
+          key: UNIVERSAL_KEYS.NUM_IMAGES,
+          label: "Number of images",
+          type: CONTROL_TYPES.INT,
+          min: 1,
+          max: 8,
+          step: 1,
+          default: 1,
+          help: "How many images to generate per request.",
+        },
+        [UNIVERSAL_KEYS.SEED]: {
+          key: UNIVERSAL_KEYS.SEED,
+          label: "Seed",
+          type: CONTROL_TYPES.INT,
+          min: 0,
+          max: 2147483647,
+          step: 1,
+          help: "Reproducibility seed. Leave unset for a random result.",
+        },
+        [UNIVERSAL_KEYS.GUIDANCE]: {
+          key: UNIVERSAL_KEYS.GUIDANCE,
+          label: "Guidance scale",
+          type: CONTROL_TYPES.NUMBER,
+          min: 1,
+          max: 20,
+          step: 0.5,
+          default: 3.5,
+          help: "How closely the output follows the prompt. Higher = more literal.",
+        },
+        [UNIVERSAL_KEYS.STEPS]: {
+          key: UNIVERSAL_KEYS.STEPS,
+          label: "Inference steps",
+          type: CONTROL_TYPES.INT,
+          min: 1,
+          max: 50,
+          step: 1,
+          default: 28,
+          help: "Number of denoising steps. More steps = higher quality but slower.",
+        },
+        // negativePrompt intentionally omitted — not supported by Flux dev.
+      },
+      advanced: [
+        {
+          // NOTE: this selects the fal endpoint, not a request-body field —
+          // it's wired at adapter construction (config.model). The generate
+          // route (#24) maps this setting to createAdapter('flux-fal', { model }).
+          key: "model",
+          label: "Model variant",
+          type: CONTROL_TYPES.ENUM,
+          options: ["fal-ai/flux/dev", "fal-ai/flux/schnell"],
+          default: "fal-ai/flux/dev",
+          help: "Flux model variant. 'schnell' is faster; 'dev' produces higher quality.",
+        },
+        {
+          key: "outputFormat",
+          label: "Output format",
+          type: CONTROL_TYPES.ENUM,
+          options: ["jpeg", "png"],
+          default: "jpeg",
+          help: "Format of the generated image. JPEG is smaller; PNG is lossless.",
+        },
+        {
+          key: "enableSafetyChecker",
+          label: "Safety checker",
+          type: CONTROL_TYPES.BOOLEAN,
+          default: true,
+          help: "Enable fal.ai content-safety filtering on the generated image.",
+        },
+        {
+          key: "acceleration",
+          label: "Acceleration",
+          type: CONTROL_TYPES.ENUM,
+          options: ["none", "regular", "high"],
+          default: "none",
+          help: "Inference speed mode. Higher acceleration may reduce quality.",
+        },
+      ],
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -321,6 +436,18 @@ function _buildFalInput(request) {
   if (s.outputFormat !== undefined) {
     body.output_format = s.outputFormat;
   }
+
+  // acceleration — fal speed mode (none|regular|high), default none
+  if (s.acceleration !== undefined) {
+    body.acceleration = s.acceleration;
+  }
+
+  // NOTE: settings.model is intentionally NOT a body param. The model variant
+  // (flux dev|schnell) selects the fal ENDPOINT (the URL path), so it is wired
+  // at adapter construction via config.model — the generate route (#24) maps
+  // settings.model -> createAdapter('flux-fal', { model }) per request. Within
+  // a synchronous generate() the same instance's this._model is used for both
+  // submit and poll, so the URLs stay consistent.
 
   return body;
 }
