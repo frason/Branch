@@ -16,6 +16,7 @@
 import { useState } from "react";
 import { generate } from "../api/client.js";
 import { useTreeStore, useTreeActions } from "../state/treeStore.jsx";
+import { useBudgetActions } from "../budget/budgetStore.jsx";
 
 // ---------------------------------------------------------------------------
 // Styles
@@ -97,6 +98,7 @@ const styles = {
 export function GeneratePanel() {
   const { tree, status: storeStatus } = useTreeStore();
   const { addNode } = useTreeActions();
+  const { recordSpend } = useBudgetActions();
 
   const [prompt, setPrompt] = useState("");
   const [pending, setPending] = useState(false);
@@ -124,6 +126,12 @@ export function GeneratePanel() {
     try {
       const result = await generate(treeId, { branchId, prompt: trimmedPrompt });
       addNode(result.node);
+      // Record spend from the generation cost; failed generations are caught
+      // below and never reach this line, so we only record on success.
+      const spentCredits = result.cost?.credits ?? result.node?.settings?.cost_credits ?? 0;
+      if (spentCredits > 0) {
+        recordSpend(spentCredits);
+      }
       setPrompt("");
       const credits = result.cost?.credits ?? result.node?.settings?.cost_credits ?? null;
       setStatusMsg({

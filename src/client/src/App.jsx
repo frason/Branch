@@ -1,20 +1,21 @@
 /**
  * App.jsx
  *
- * Root application component.  Wraps the canvas in TreeProvider so the
- * store is available throughout the tree, and triggers loadOrCreateTree()
- * on mount so the canvas renders from backend data on startup.
+ * Root application component.  Wraps the canvas in TreeProvider and
+ * BudgetProvider so both stores are available throughout the tree.
+ * Triggers loadOrCreateTree() on mount so the canvas renders from backend data
+ * on startup.
  *
  * Future additions here:
- *   - Prompt input overlay
  *   - Per-node settings panel
- *   - Budget / velocity meter
  */
 
 import { useEffect } from "react";
 import { BabylonCanvas } from "./canvas/BabylonCanvas.jsx";
 import { GeneratePanel } from "./ui/GeneratePanel.jsx";
+import { BudgetMeter } from "./ui/BudgetMeter.jsx";
 import { TreeProvider, useTreeActions } from "./state/treeStore.jsx";
+import { BudgetProvider } from "./budget/budgetStore.jsx";
 
 const styles = {
   app: {
@@ -42,6 +43,7 @@ function AppInner() {
     <div style={styles.app}>
       <BabylonCanvas />
       <GeneratePanel />
+      <BudgetMeter />
     </div>
   );
 }
@@ -49,7 +51,9 @@ function AppInner() {
 export function App() {
   return (
     <TreeProvider>
-      <AppInner />
+      <BudgetProvider>
+        <AppInner />
+      </BudgetProvider>
     </TreeProvider>
   );
 }
