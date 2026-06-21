@@ -153,6 +153,16 @@ describe("Registry — registeredAdapters", () => {
   it("includes 'mock' by default", () => {
     assert.ok(registeredAdapters().includes("mock"));
   });
+
+  it("includes 'flux-fal' via the public index (built-in adapters self-register)", () => {
+    // Regression guard: this file imports ONLY from index.js (never the
+    // adapters/ files directly), so flux-fal must be registered as a result
+    // of importing the generation entry point — not just when a test imports
+    // the adapter module. createAdapter('flux-fal') must resolve here.
+    assert.ok(registeredAdapters().includes("flux-fal"));
+    const adapter = createAdapter("flux-fal", { apiKey: "x" });
+    assert.equal(adapter.constructor.name, "FluxFalAdapter");
+  });
 });
 
 // ---------------------------------------------------------------------------

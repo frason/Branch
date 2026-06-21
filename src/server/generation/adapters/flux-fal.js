@@ -1,0 +1,391 @@
+/**
+ * src/server/generation/adapters/flux-fal.js
+ *
+ * FluxFalAdapter — a real GenerationAdapter backed by fal.ai's Flux models
+ * via the fal.ai queue REST API.
+ *
+ * Queue API flow:
+ *   1. submit()  → POST https://queue.fal.run/{model_id}
+ *                  Returns { request_id, response_url, status_url, cancel_url }
+ *                  We store request_id as jobId.
+ *
+ *   2. poll()    → GET  https://queue.fal.run/{model_id}/requests/{request_id}/status
+ *                  Maps fal status → normalized status:
+ *                    IN_QUEUE    → 'running'
+ *                    IN_PROGRESS → 'running'
+ *                    COMPLETED   → fetch result from response URL → 'succeeded'
+ *                  Failure (non-2xx or error field) → 'failed' with GenerationError
+ *
+ * response_url handling:
+ *   The submit response contains a response_url, but the result can also be
+ *   fetched from the deterministic URL:
+ *     https://queue.fal.run/{model_id}/requests/{request_id}
+ *   We reconstruct this URL in poll() from model + jobId so we do NOT need to
+ *   store a jobId→response_url mapping on the instance.
+ *
+ * Cost estimation:
+ *   fal.ai does NOT return billing cost in the API response. We compute an
+ *   ESTIMATE: credits = num_images * config.creditsPerImage (default 1).
+ *   The currency field is set to 'FAL_ESTIMATE' to make clear this is not
+ *   real billing data. Actual charges appear in the fal.ai dashboard.
+ *
+ * Security:
+ *   The API key is never logged or included in any thrown error message.
+ *   The Authorization header uses the "Key {apiKey}" scheme as required by fal.
+ */
+
+import { GenerationAdapter, GenerationError } from "../adapter.js";
+import { registerAdapter } from "../registry.js";
+
+const FAL_QUEUE_BASE = "https://queue.fal.run";
+const DEFAULT_MODEL = "fal-ai/flux/dev";
+const DEFAULT_CREDITS_PER_IMAGE = 1;
+
+export class FluxFalAdapter extends GenerationAdapter {
+  /**
+   * @param {Object} [config]
+   * @param {string}   config.apiKey          - fal.ai API key (REQUIRED at submit time).
+   * @param {string}   [config.model]         - fal model ID (default 'fal-ai/flux/dev').
+   * @param {number}   [config.creditsPerImage] - Estimated credits per image (default 1).
+   * @param {Function} [config.fetch]         - Injectable fetch (default globalThis.fetch).
+   *                                            Inject in tests to stub HTTP — no live network.
+   */
+  constructor(config = {}) {
+    super();
+    // Store config but never log or expose apiKey
+    this._apiKey = config.apiKey ?? null;
+    this._model = config.model ?? DEFAULT_MODEL;
+    this._creditsPerImage = config.creditsPerImage ?? DEFAULT_CREDITS_PER_IMAGE;
+    // Injectable fetch: lets tests stub HTTP without any live network
+    this._fetch = config.fetch ?? globalThis.fetch;
+  }
+
+  // ---------------------------------------------------------------------------
+  // submit
+  // ---------------------------------------------------------------------------
+
+  /**
+   * POST the generation job to fal's queue API.
+   *
+   * @param {import('../types.js').GenerationRequest} request
+   * @returns {Promise<{ jobId: string, status: 'pending' }>}
+   * @throws {GenerationError} MISSING_KEY if no API key was provided.
+   * @throws {GenerationError} on HTTP errors from fal.
+   */
+  async submit(request) {
+    if (!this._apiKey) {
+      throw new GenerationError(
+        "fal.ai API key is required. Pass apiKey in adapter config.",
+        { provider: "flux-fal", code: "MISSING_KEY" }
+      );
+    }
+
+    const body = _buildFalInput(request);
+    const url = `${FAL_QUEUE_BASE}/${this._model}`;
+
+    let response;
+    try {
+      response = await this._fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Key ${this._apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (networkErr) {
+      throw new GenerationError("Network error contacting fal.ai", {
+        provider: "flux-fal",
+        code: "PROVIDER_ERROR",
+        raw: networkErr?.message ?? String(networkErr),
+      });
+    }
+
+    if (!response.ok) {
+      await _throwForStatus(response, "submit");
+    }
+
+    const data = await response.json();
+
+    // data: { request_id, response_url, status_url, cancel_url, queue_position }
+    return { jobId: data.request_id, status: "pending" };
+  }
+
+  // ---------------------------------------------------------------------------
+  // poll
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Poll the fal queue status for a job. When COMPLETED, fetches and returns
+   * the result.
+   *
+   * @param {string} jobId  - The request_id returned by submit().
+   * @returns {Promise<import('../types.js').GenerationResult>}
+   */
+  async poll(jobId) {
+    const statusUrl = `${FAL_QUEUE_BASE}/${this._model}/requests/${jobId}/status`;
+
+    let statusRes;
+    try {
+      statusRes = await this._fetch(statusUrl, {
+        headers: { Authorization: `Key ${this._apiKey}` },
+      });
+    } catch (networkErr) {
+      throw new GenerationError("Network error polling fal.ai", {
+        provider: "flux-fal",
+        code: "PROVIDER_ERROR",
+        raw: networkErr?.message ?? String(networkErr),
+      });
+    }
+
+    if (!statusRes.ok) {
+      await _throwForStatus(statusRes, "poll");
+    }
+
+    const statusData = await statusRes.json();
+
+    // Map fal status enum to normalized status
+    if (statusData.status === "IN_QUEUE" || statusData.status === "IN_PROGRESS") {
+      return {
+        jobId,
+        status: "running",
+        assetUrl: null,
+        provider: "flux-fal",
+        model: this._model,
+        cost: { credits: 0, currency: "FAL_ESTIMATE" },
+        raw: statusData,
+        error: null,
+      };
+    }
+
+    if (statusData.status === "COMPLETED") {
+      return await this._fetchResult(jobId);
+    }
+
+    // Unexpected status or error field present — treat as failure
+    const err = new GenerationError(
+      `fal.ai job failed: ${statusData.error ?? statusData.status ?? "unknown error"}`,
+      {
+        provider: "flux-fal",
+        code: statusData.error_type ?? "PROVIDER_ERROR",
+        raw: statusData,
+      }
+    );
+    return {
+      jobId,
+      status: "failed",
+      assetUrl: null,
+      provider: "flux-fal",
+      model: this._model,
+      cost: { credits: 0, currency: "FAL_ESTIMATE" },
+      raw: statusData,
+      error: err,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Internal helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Fetch the completed result from fal.ai.
+   * Uses the deterministic result URL: https://queue.fal.run/{model}/requests/{jobId}
+   *
+   * @param {string} jobId
+   * @returns {Promise<import('../types.js').GenerationResult>}
+   */
+  async _fetchResult(jobId) {
+    const resultUrl = `${FAL_QUEUE_BASE}/${this._model}/requests/${jobId}`;
+
+    let resultRes;
+    try {
+      resultRes = await this._fetch(resultUrl, {
+        headers: { Authorization: `Key ${this._apiKey}` },
+      });
+    } catch (networkErr) {
+      throw new GenerationError("Network error fetching fal.ai result", {
+        provider: "flux-fal",
+        code: "PROVIDER_ERROR",
+        raw: networkErr?.message ?? String(networkErr),
+      });
+    }
+
+    if (!resultRes.ok) {
+      await _throwForStatus(resultRes, "fetch result");
+    }
+
+    // Result JSON: { images: [{ url, width, height, content_type }], prompt, seed, ... }
+    const data = await resultRes.json();
+
+    const assetUrl = data.images?.[0]?.url ?? null;
+
+    // A COMPLETED job with no image is a failure, not a success: there's
+    // nothing to render and nothing to charge for. Surface it as a normalized
+    // failed result (not a misleading 'succeeded' with assetUrl:null/cost:0).
+    if (!assetUrl) {
+      return {
+        jobId,
+        status: "failed",
+        assetUrl: null,
+        provider: "flux-fal",
+        model: this._model,
+        cost: { credits: 0, currency: "FAL_ESTIMATE" },
+        raw: data,
+        error: new GenerationError("fal.ai returned no image", {
+          provider: "flux-fal",
+          code: "NO_IMAGE",
+          raw: data,
+        }),
+      };
+    }
+
+    const numImages = data.images.length;
+
+    return {
+      jobId,
+      status: "succeeded",
+      assetUrl,
+      provider: "flux-fal",
+      model: this._model,
+      // ESTIMATED cost — fal does not return billing data in the API response.
+      // Actual charges appear in the fal.ai dashboard.
+      cost: {
+        credits: numImages * this._creditsPerImage,
+        currency: "FAL_ESTIMATE",
+      },
+      raw: data,
+      error: null,
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Private helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Map a normalized GenerationRequest to the fal.ai Flux input body.
+ *
+ * Settings mapping:
+ *   request.settings.imageSize | aspectRatio → image_size (enum or {width,height})
+ *   request.settings.steps                   → num_inference_steps
+ *   request.settings.seed | request.seed     → seed
+ *   request.settings.guidance                → guidance_scale
+ *   request.settings.numImages               → num_images
+ *
+ * @param {import('../types.js').GenerationRequest} request
+ * @returns {Object} fal input body
+ */
+function _buildFalInput(request) {
+  const s = request.settings ?? {};
+
+  const body = {
+    prompt: request.prompt ?? "",
+  };
+
+  // image_size: prefer explicit imageSize, fall back to aspectRatio mapping
+  const imageSize = s.imageSize ?? _aspectRatioToImageSize(s.aspectRatio);
+  if (imageSize !== undefined) {
+    body.image_size = imageSize;
+  } else {
+    body.image_size = "landscape_4_3"; // fal default
+  }
+
+  // num_inference_steps
+  if (s.steps !== undefined) {
+    body.num_inference_steps = s.steps;
+  }
+
+  // seed — prefer settings.seed, then top-level request.seed
+  const seed = s.seed ?? request.seed;
+  if (seed !== undefined) {
+    body.seed = seed;
+  }
+
+  // guidance_scale
+  if (s.guidance !== undefined) {
+    body.guidance_scale = s.guidance;
+  }
+
+  // num_images
+  if (s.numImages !== undefined) {
+    body.num_images = s.numImages;
+  }
+
+  // enable_safety_checker — default true (fal default)
+  if (s.enableSafetyChecker !== undefined) {
+    body.enable_safety_checker = s.enableSafetyChecker;
+  }
+
+  // output_format — default jpeg (fal default)
+  if (s.outputFormat !== undefined) {
+    body.output_format = s.outputFormat;
+  }
+
+  return body;
+}
+
+/**
+ * Map the normalized aspectRatio string (e.g. "16:9") to a fal image_size enum.
+ * Returns undefined if ratio is unknown so callers can supply their own default.
+ *
+ * @param {string|undefined} aspectRatio
+ * @returns {string|undefined}
+ */
+function _aspectRatioToImageSize(aspectRatio) {
+  if (!aspectRatio) return undefined;
+  const map = {
+    "1:1": "square_hd",
+    "4:3": "landscape_4_3",
+    "3:4": "portrait_4_3",
+    "16:9": "landscape_16_9",
+    "9:16": "portrait_16_9",
+  };
+  return map[aspectRatio]; // undefined if not found
+}
+
+/**
+ * Throw a normalized GenerationError from a non-ok HTTP response.
+ * Never includes the raw Authorization header or API key.
+ *
+ * @param {Response} response
+ * @param {string}   context  - Short label for where this was called (for the message).
+ */
+async function _throwForStatus(response, context) {
+  let raw = null;
+  try {
+    raw = await response.json();
+  } catch {
+    // ignore parse failures; raw stays null
+  }
+
+  const { status } = response;
+  let code;
+  let message;
+
+  if (status === 401 || status === 403) {
+    code = "AUTH";
+    message = `fal.ai authentication failed during ${context} (HTTP ${status}).`;
+  } else if (status === 422) {
+    code = "INVALID_INPUT";
+    message = `fal.ai rejected the request as invalid during ${context} (HTTP ${status}).`;
+  } else if (status === 429) {
+    code = "RATE_LIMIT";
+    message = `fal.ai rate limit exceeded during ${context} (HTTP ${status}).`;
+  } else {
+    code = "PROVIDER_ERROR";
+    message = `fal.ai returned an unexpected error during ${context} (HTTP ${status}).`;
+  }
+
+  throw new GenerationError(message, { provider: "flux-fal", code, raw });
+}
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
+// Register 'flux-fal' in the global registry so callers can use
+//   createAdapter('flux-fal', { apiKey: '...' })
+// or set GENERATION_PROVIDER=flux-fal.
+// The default provider remains 'mock' — this does not change the default.
+registerAdapter("flux-fal", (config) => new FluxFalAdapter(config));
