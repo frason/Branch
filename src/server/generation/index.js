@@ -24,6 +24,9 @@
 export { GenerationAdapter, GenerationError } from "./adapter.js";
 export { registerAdapter, createAdapter, registeredAdapters } from "./registry.js";
 
-// Re-export the mock adapter so external code can subclass or reference it
-// without importing from the adapters/ subdirectory directly.
+// Re-export the built-in adapters. These re-exports also ensure each adapter
+// module is imported, so its registerAdapter(...) side-effect runs and the
+// provider is reachable via createAdapter(name) through this entry point
+// (not just when a test imports the file directly).
 export { MockGenerationAdapter } from "./adapters/mock.js";
+export { FluxFalAdapter } from "./adapters/flux-fal.js";
