@@ -13,6 +13,7 @@
     "migrate": "node src/server/db/migrate.js"
   },
   "dependencies": {
+    "dotenv": "^17.4.2",
     "express": "^4.19.2",
     "pg": "^8.21.0"
   },
