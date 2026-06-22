@@ -84,6 +84,22 @@ export class GenerationAdapter {
   }
 
   /**
+   * Return the capabilities descriptor for this adapter.
+   *
+   * Describes the universal controls this adapter supports (with valid
+   * ranges / options / defaults) and any provider-specific advanced controls.
+   *
+   * Concrete adapters should override this and return an accurate descriptor.
+   * The base implementation returns an empty descriptor (no universal controls,
+   * no advanced controls) so callers always receive a valid shape.
+   *
+   * @returns {import('./settings.js').AdapterCapabilities}
+   */
+  getCapabilities() {
+    return { universal: {}, advanced: [] };
+  }
+
+  /**
    * Convenience: submit a request and poll to completion.
    *
    * Implemented once here so concrete adapters do not need to repeat the

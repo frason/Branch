@@ -19,6 +19,7 @@
  */
 
 import { GenerationAdapter, GenerationError } from "../adapter.js";
+import { CONTROL_TYPES, UNIVERSAL_KEYS } from "../settings.js";
 
 /** @type {Map<string, { status: string, prompt: string, pollCount: number }>} */
 const _store = new Map();
@@ -38,6 +39,57 @@ export class MockGenerationAdapter extends GenerationAdapter {
   constructor(config = {}) {
     super();
     this.config = config;
+  }
+
+  /**
+   * Return a small representative capabilities descriptor.
+   * Useful for tests and local development — gives the UI something to render
+   * without requiring a live provider.
+   *
+   * @returns {import('../settings.js').AdapterCapabilities}
+   */
+  getCapabilities() {
+    return {
+      universal: {
+        [UNIVERSAL_KEYS.ASPECT_RATIO]: {
+          key: UNIVERSAL_KEYS.ASPECT_RATIO,
+          label: "Aspect ratio",
+          type: CONTROL_TYPES.ENUM,
+          options: ["1:1", "4:3", "3:4", "16:9", "9:16"],
+          default: "1:1",
+          help: "Output image dimensions.",
+        },
+        [UNIVERSAL_KEYS.NUM_IMAGES]: {
+          key: UNIVERSAL_KEYS.NUM_IMAGES,
+          label: "Number of images",
+          type: CONTROL_TYPES.INT,
+          min: 1,
+          max: 4,
+          step: 1,
+          default: 1,
+          help: "How many images to generate in one request.",
+        },
+        [UNIVERSAL_KEYS.SEED]: {
+          key: UNIVERSAL_KEYS.SEED,
+          label: "Seed",
+          type: CONTROL_TYPES.INT,
+          min: 0,
+          max: 2147483647,
+          step: 1,
+          help: "Fixed seed for reproducible results. Leave unset for random.",
+        },
+      },
+      advanced: [
+        {
+          key: "mockQuality",
+          label: "Mock quality",
+          type: CONTROL_TYPES.ENUM,
+          options: ["low", "medium", "high"],
+          default: "medium",
+          help: "Simulated quality level (no real effect in mock adapter).",
+        },
+      ],
+    };
   }
 
   /**
