@@ -13,6 +13,8 @@
  * be unit-tested without a real fetch or server.
  */
 
+import { buildProviderKeyHeaders } from "../byok/keyHelpers.js";
+
 // ---------------------------------------------------------------------------
 // Pure helpers — testable without fetch / network
 // ---------------------------------------------------------------------------
@@ -200,24 +202,33 @@ export async function getNode(id, { signal } = {}) {
  * throws an Error with .status and the server's error message — callers
  * should catch and display that message.
  *
+ * The optional `apiKey` is the user's fal.ai key, forwarded ONLY to Branch's
+ * own backend proxy as the `x-provider-key` header.  It is never sent to
+ * fal.ai or any third party directly, and is never logged here.
+ *
  * @param {string} treeId
  * @param {{ branchId: string, prompt?: string, parentId?: string|null,
  *           settings?: object }} opts
- * @param {{ signal?: AbortSignal }} [reqOpts]
+ * @param {{ signal?: AbortSignal, apiKey?: string }} [reqOpts]
  * @returns {Promise<{ node: Node, cost: { credits: number, currency: string } }>}
  */
 export async function generate(
   treeId,
   { branchId, prompt, parentId, settings },
-  { signal } = {}
+  { signal, apiKey } = {}
 ) {
   const body = { branchId };
   if (prompt !== undefined) body.prompt = prompt;
   if (parentId !== undefined) body.parentId = parentId;
   if (settings !== undefined) body.settings = settings;
+
+  // Attach the provider key as a header when supplied — sent ONLY to our own
+  // backend proxy, never to a third-party endpoint. Uses the shared, tested
+  // helper so the guard logic can't drift between here and its unit tests.
   return request(`/api/trees/${encodeURIComponent(treeId)}/generate`, {
     method: "POST",
     body: JSON.stringify(body),
     signal,
+    headers: buildProviderKeyHeaders(apiKey),
   });
 }

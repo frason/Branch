@@ -10,13 +10,31 @@
  * In-flight state is kept local (useState) to avoid polluting the reducer with
  * transient UI state.
  *
+ * The saved fal.ai key (from keyStore) is automatically forwarded as the
+ * `x-provider-key` header on every generate request.  The Generate button is
+ * NOT hard-gated on key presence — the mock provider works without one.
+ * If the server returns 400 "API key required" we surface a targeted inline
+ * message directing the user to the KeyPanel.
+ *
  * Layout: fixed bottom-centre overlay so it sits above the Babylon canvas.
  */
 
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { generate } from "../api/client.js";
 import { useTreeStore, useTreeActions } from "../state/treeStore.jsx";
 import { useBudgetActions } from "../budget/budgetStore.jsx";
+import { getKey, subscribe } from "../byok/keyStore.js";
+
+// ---------------------------------------------------------------------------
+// Key hook — re-renders when the stored key changes
+// ---------------------------------------------------------------------------
+
+function useStoredKey() {
+  return useSyncExternalStore(subscribe, getKey);
+}
+
+// The exact message the server returns when a key is needed but absent.
+const API_KEY_REQUIRED_MSG = "API key required";
 
 // ---------------------------------------------------------------------------
 // Styles
@@ -89,6 +107,9 @@ const styles = {
   statusSuccess: {
     color: "#6ee7b7",
   },
+  keyPrompt: {
+    color: "#fb923c",
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -99,10 +120,11 @@ export function GeneratePanel() {
   const { tree, status: storeStatus } = useTreeStore();
   const { addNode } = useTreeActions();
   const { recordSpend } = useBudgetActions();
+  const apiKey = useStoredKey();
 
   const [prompt, setPrompt] = useState("");
   const [pending, setPending] = useState(false);
-  const [statusMsg, setStatusMsg] = useState(/** @type {null|{kind:'success'|'error'|'pending', text:string}} */ null);
+  const [statusMsg, setStatusMsg] = useState(/** @type {null|{kind:'success'|'error'|'pending'|'key', text:string}} */ null);
 
   const treeReady = storeStatus === "ready" && tree != null;
   const canSubmit = treeReady && prompt.trim().length > 0 && !pending;
@@ -124,7 +146,13 @@ export function GeneratePanel() {
     setStatusMsg({ kind: "pending", text: "Generating…" });
 
     try {
-      const result = await generate(treeId, { branchId, prompt: trimmedPrompt });
+      // Pass the saved key as apiKey — the client sends it as x-provider-key
+      // ONLY to our own backend proxy, never to any third party.
+      const result = await generate(
+        treeId,
+        { branchId, prompt: trimmedPrompt },
+        { apiKey: apiKey || undefined }
+      );
       addNode(result.node);
       // Record spend from the generation cost; failed generations are caught
       // below and never reach this line, so we only record on success.
@@ -139,7 +167,20 @@ export function GeneratePanel() {
         text: credits != null ? `Done — spent ${credits} credits` : "Node generated",
       });
     } catch (err) {
-      setStatusMsg({ kind: "error", text: err.message ?? "Generation failed" });
+      // Special-case 400 "API key required" — give an actionable message that
+      // points the user to the KeyPanel (top-left of the screen).
+      if (
+        err.status === 400 &&
+        typeof err.message === "string" &&
+        err.message.includes(API_KEY_REQUIRED_MSG)
+      ) {
+        setStatusMsg({
+          kind: "key",
+          text: "Add your fal.ai key to generate (see the key panel, top-left).",
+        });
+      } else {
+        setStatusMsg({ kind: "error", text: err.message ?? "Generation failed" });
+      }
     } finally {
       setPending(false);
     }
@@ -153,6 +194,7 @@ export function GeneratePanel() {
   if (statusMsg?.kind === "pending") statusStyle = { ...statusStyle, ...styles.statusPending };
   else if (statusMsg?.kind === "error") statusStyle = { ...statusStyle, ...styles.statusError };
   else if (statusMsg?.kind === "success") statusStyle = { ...statusStyle, ...styles.statusSuccess };
+  else if (statusMsg?.kind === "key") statusStyle = { ...statusStyle, ...styles.keyPrompt };
 
   return (
     <div style={styles.panel} aria-label="Generate panel">
@@ -180,7 +222,7 @@ export function GeneratePanel() {
         </button>
       </form>
       {statusMsg && (
-        <div style={statusStyle} role={statusMsg.kind === "error" ? "alert" : "status"}>
+        <div style={statusStyle} role={statusMsg.kind === "error" || statusMsg.kind === "key" ? "alert" : "status"}>
           {statusMsg.text}
         </div>
       )}
