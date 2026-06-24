@@ -298,6 +298,7 @@ router.post(
         // All other GenerationErrors (TIMEOUT, AUTH, PROVIDER_ERROR, etc.)
         // are surfaced as 502. Auth errors (wrong/expired key) are kept as a
         // generic message — never leak provider internals to the caller.
+        console.error("[generate] GenerationError:", err.code, err.message);
         return res
           .status(502)
           .json({ error: "generation failed", cost: { credits: 0 } });

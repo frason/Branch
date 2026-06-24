@@ -59,6 +59,11 @@ export class FluxFalAdapter extends GenerationAdapter {
     this._creditsPerImage = config.creditsPerImage ?? DEFAULT_CREDITS_PER_IMAGE;
     // Injectable fetch: lets tests stub HTTP without any live network
     this._fetch = config.fetch ?? globalThis.fetch;
+    // Map from jobId → { statusUrl, resultUrl } populated by submit().
+    // fal.ai returns the canonical URLs in the submit response; we use those
+    // in poll() instead of reconstructing them, since the model path in the URL
+    // may differ from what we sent (e.g. flux/dev vs flux-dev routing).
+    this._jobUrls = new Map();
   }
 
   // ---------------------------------------------------------------------------
@@ -223,6 +228,13 @@ export class FluxFalAdapter extends GenerationAdapter {
     const data = await response.json();
 
     // data: { request_id, response_url, status_url, cancel_url, queue_position }
+    // Store the canonical URLs fal returns — the path segments in the URL may
+    // differ from what we submitted (e.g. routing alias), so use theirs, not ours.
+    this._jobUrls.set(data.request_id, {
+      statusUrl: data.status_url,
+      resultUrl: data.response_url,
+    });
+
     return { jobId: data.request_id, status: "pending" };
   }
 
@@ -238,7 +250,8 @@ export class FluxFalAdapter extends GenerationAdapter {
    * @returns {Promise<import('../types.js').GenerationResult>}
    */
   async poll(jobId) {
-    const statusUrl = `${FAL_QUEUE_BASE}/${this._model}/requests/${jobId}/status`;
+    const urls = this._jobUrls.get(jobId);
+    const statusUrl = urls?.statusUrl ?? `${FAL_QUEUE_BASE}/${this._model}/requests/${jobId}/status`;
 
     let statusRes;
     try {
@@ -310,7 +323,9 @@ export class FluxFalAdapter extends GenerationAdapter {
    * @returns {Promise<import('../types.js').GenerationResult>}
    */
   async _fetchResult(jobId) {
-    const resultUrl = `${FAL_QUEUE_BASE}/${this._model}/requests/${jobId}`;
+    const urls = this._jobUrls.get(jobId);
+    const resultUrl = urls?.resultUrl ?? `${FAL_QUEUE_BASE}/${this._model}/requests/${jobId}`;
+    this._jobUrls.delete(jobId); // clean up — result is terminal
 
     let resultRes;
     try {

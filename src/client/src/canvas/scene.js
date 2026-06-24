@@ -275,8 +275,12 @@ export function addNodeMesh(scene, nodeData) {
   if (nodeData.asset_url && nodeData.status === "done") {
     // Generated image available — load it as an unlit emissive texture.
     // fal.ai CDN supplies permissive CORS headers so no special handling needed.
-    mat.emissiveTexture = new Texture(nodeData.asset_url, scene);
-    mat.emissiveColor = Color3.Black(); // emissiveTexture takes precedence
+    // If the texture fails (e.g. mock URL 404s), fall back to the purple placeholder.
+    const tex = new Texture(nodeData.asset_url, scene, undefined, undefined, undefined, null,
+      () => { mat.emissiveTexture = null; mat.emissiveColor = new Color3(0.42, 0.36, 0.55); }
+    );
+    mat.emissiveTexture = tex;
+    mat.emissiveColor = Color3.Black(); // emissiveTexture takes precedence when it loads
   } else if (nodeData.status === "failed") {
     // Generation failed — muted red-grey to signal failure state.
     mat.emissiveColor = new Color3(0.55, 0.18, 0.18);

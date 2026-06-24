@@ -74,8 +74,8 @@ async function request(path, init = {}) {
   let response;
   try {
     response = await fetch(url, {
-      headers: { "Content-Type": "application/json", ...init.headers },
       ...init,
+      headers: { "Content-Type": "application/json", ...init.headers },
     });
   } catch (networkErr) {
     const err = new Error(`Network error reaching ${url}: ${networkErr.message}`);
