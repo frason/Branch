@@ -26,6 +26,7 @@ import {
   StandardMaterial,
   Color3,
   Color4,
+  Texture,
 } from "@babylonjs/core";
 // Color3 is used for node materials; Color4 used for scene clear and line colors.
 
@@ -135,7 +136,7 @@ export function initScene(canvas) {
    */
   function clearNodeMeshes() {
     for (const mesh of meshMap.values()) {
-      mesh.material?.dispose();
+      mesh.material?.dispose(true, true); // dispose textures too
       mesh.dispose();
     }
     meshMap.clear();
@@ -184,7 +185,7 @@ export function initScene(canvas) {
     // Render node cards
     for (const node of nodes) {
       const pos = layoutMap.get(node.id) ?? { x: 0, y: 0 };
-      const layoutData = { id: node.id, x: pos.x, y: pos.y };
+      const layoutData = { id: node.id, x: pos.x, y: pos.y, asset_url: node.asset_url, status: node.status };
       const mesh = addNodeMesh(scene, layoutData);
       meshMap.set(node.id, mesh);
     }
@@ -262,16 +263,28 @@ export function addNodeMesh(scene, nodeData) {
 
   mesh.position.set(t.x, t.y, t.z);
 
-  // Placeholder material — flat purple-grey card. Rendered UNLIT (emissive
-  // fill + disableLighting) so it reads consistently regardless of light
-  // angle: a 2D card's camera-facing normal is perpendicular to any overhead
-  // light, which would otherwise leave it nearly black. When the image
-  // pipeline lands, swap emissiveTexture in for the generated image.
+  // Material — rendered UNLIT (emissive fill/texture + disableLighting) so
+  // node cards read consistently regardless of light angle: a 2D card's
+  // camera-facing normal is perpendicular to any overhead light, which would
+  // otherwise leave it nearly black.
   const mat = new StandardMaterial(`mat-${nodeData.id}`, scene);
-  mat.emissiveColor = new Color3(0.42, 0.36, 0.55); // flat purple-grey fill
   mat.diffuseColor = Color3.Black();
   mat.specularColor = Color3.Black(); // flat, no specular highlights
-  mat.disableLighting = true; // unlit — color comes purely from emissive
+  mat.disableLighting = true; // unlit — color/texture comes purely from emissive
+
+  if (nodeData.asset_url && nodeData.status === "done") {
+    // Generated image available — load it as an unlit emissive texture.
+    // fal.ai CDN supplies permissive CORS headers so no special handling needed.
+    mat.emissiveTexture = new Texture(nodeData.asset_url, scene);
+    mat.emissiveColor = Color3.Black(); // emissiveTexture takes precedence
+  } else if (nodeData.status === "failed") {
+    // Generation failed — muted red-grey to signal failure state.
+    mat.emissiveColor = new Color3(0.55, 0.18, 0.18);
+  } else {
+    // Pending / generating / no asset_url — flat purple-grey placeholder.
+    mat.emissiveColor = new Color3(0.42, 0.36, 0.55);
+  }
+
   mesh.material = mat;
 
   return mesh;
