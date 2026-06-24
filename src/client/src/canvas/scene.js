@@ -94,16 +94,20 @@ export function initScene(canvas) {
   camera.minZ = 0.01;
   camera.maxZ = 1000;
 
-  // Fixed ortho bounds — centred on origin, 800×800 world units visible.
-  // These values are intentionally wider than a single node so there is
-  // breathing room; later pan/zoom changes these at runtime.
-  const VIEW_HALF_W = 400;
-  const VIEW_HALF_H = 400;
   camera.mode = ArcRotateCamera.ORTHOGRAPHIC_CAMERA;
-  camera.orthoLeft = -VIEW_HALF_W;
-  camera.orthoRight = VIEW_HALF_W;
-  camera.orthoTop = VIEW_HALF_H;
-  camera.orthoBottom = -VIEW_HALF_H;
+
+  // Keep ortho bounds matched to the canvas CSS size so 1 world unit = 1 CSS
+  // pixel. Without this, resizing the window stretches/shrinks the projection
+  // while node geometry stays fixed in world space — content appears to scale.
+  function updateOrthoBounds() {
+    const w = canvas.clientWidth  || canvas.width  || 800;
+    const h = canvas.clientHeight || canvas.height || 600;
+    camera.orthoLeft   = -w / 2;
+    camera.orthoRight  =  w / 2;
+    camera.orthoTop    =  h / 2;
+    camera.orthoBottom = -h / 2;
+  }
+  updateOrthoBounds();
 
   // Do NOT attach user controls — pan/zoom will be wired explicitly later.
 
@@ -215,7 +219,7 @@ export function initScene(canvas) {
   // ------------------------------------------------------------------
   // Resize handling — kept here so the component just passes the canvas
   // ------------------------------------------------------------------
-  const handleResize = () => engine.resize();
+  const handleResize = () => { engine.resize(); updateOrthoBounds(); };
   window.addEventListener("resize", handleResize);
 
   // ------------------------------------------------------------------
