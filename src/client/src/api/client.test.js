@@ -113,3 +113,43 @@ describe("generate endpoint URL", () => {
     expect(extractError(404, { error: "Tree not found" })).toBe("Tree not found");
   });
 });
+
+// ---------------------------------------------------------------------------
+// generate() header wiring — stub global fetch, assert x-provider-key flows
+// ---------------------------------------------------------------------------
+
+import { generate } from "./client.js";
+
+function stubFetchOnce() {
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url, init });
+    return {
+      ok: true,
+      status: 201,
+      json: async () => ({ node: { id: "1" }, cost: { credits: 1 } }),
+    };
+  };
+  return calls;
+}
+
+describe("generate() — provider key header", () => {
+  it("attaches x-provider-key when an apiKey is supplied", async () => {
+    const calls = stubFetchOnce();
+    await generate("7", { branchId: "8", prompt: "x" }, { apiKey: "fal_abc:secret" });
+    expect(calls[0].init.headers["x-provider-key"]).toBe("fal_abc:secret");
+  });
+
+  it("omits x-provider-key when no apiKey is supplied", async () => {
+    const calls = stubFetchOnce();
+    await generate("7", { branchId: "8", prompt: "x" });
+    expect(calls[0].init.headers["x-provider-key"]).toBeUndefined();
+  });
+
+  it("never puts the key in the URL or request body", async () => {
+    const calls = stubFetchOnce();
+    await generate("7", { branchId: "8", prompt: "x" }, { apiKey: "fal_abc:secret" });
+    expect(calls[0].url).not.toContain("secret");
+    expect(calls[0].init.body).not.toContain("secret");
+  });
+});
