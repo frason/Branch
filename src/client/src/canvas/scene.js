@@ -27,6 +27,8 @@ import {
   Color3,
   Color4,
   Texture,
+  ActionManager,
+  ExecuteCodeAction,
 } from "@babylonjs/core";
 // Color3 is used for node materials; Color4 used for scene clear and line colors.
 
@@ -48,7 +50,7 @@ const FALLBACK_NODE = { id: "node-0", x: 0, y: 0 };
  * @param {HTMLCanvasElement} canvas
  * @returns {{ dispose: () => void, setNodes: (nodes: object[]) => void }}
  */
-export function initScene(canvas) {
+export function initScene(canvas, { onSelect } = {}) {
   // ------------------------------------------------------------------
   // Engine
   // ------------------------------------------------------------------
@@ -94,16 +96,20 @@ export function initScene(canvas) {
   camera.minZ = 0.01;
   camera.maxZ = 1000;
 
-  // Fixed ortho bounds — centred on origin, 800×800 world units visible.
-  // These values are intentionally wider than a single node so there is
-  // breathing room; later pan/zoom changes these at runtime.
-  const VIEW_HALF_W = 400;
-  const VIEW_HALF_H = 400;
   camera.mode = ArcRotateCamera.ORTHOGRAPHIC_CAMERA;
-  camera.orthoLeft = -VIEW_HALF_W;
-  camera.orthoRight = VIEW_HALF_W;
-  camera.orthoTop = VIEW_HALF_H;
-  camera.orthoBottom = -VIEW_HALF_H;
+
+  // Keep ortho bounds matched to the canvas CSS size so 1 world unit = 1 CSS
+  // pixel. Without this, resizing the window stretches/shrinks the projection
+  // while node geometry stays fixed in world space — content appears to scale.
+  function updateOrthoBounds() {
+    const w = canvas.clientWidth  || canvas.width  || 800;
+    const h = canvas.clientHeight || canvas.height || 600;
+    camera.orthoLeft   = -w / 2;
+    camera.orthoRight  =  w / 2;
+    camera.orthoTop    =  h / 2;
+    camera.orthoBottom = -h / 2;
+  }
+  updateOrthoBounds();
 
   // Do NOT attach user controls — pan/zoom will be wired explicitly later.
 
@@ -156,7 +162,7 @@ export function initScene(canvas) {
   // ------------------------------------------------------------------
   // Render the fallback placeholder until setNodes is called
   // ------------------------------------------------------------------
-  const fallbackMesh = addNodeMesh(scene, FALLBACK_NODE);
+  const fallbackMesh = addNodeMesh(scene, FALLBACK_NODE, { onSelect });
   meshMap.set(FALLBACK_NODE.id, fallbackMesh);
 
   // ------------------------------------------------------------------
@@ -173,7 +179,7 @@ export function initScene(canvas) {
 
     if (!nodes || nodes.length === 0) {
       // Fall back to the placeholder node
-      const mesh = addNodeMesh(scene, FALLBACK_NODE);
+      const mesh = addNodeMesh(scene, FALLBACK_NODE, { onSelect });
       meshMap.set(FALLBACK_NODE.id, mesh);
       return;
     }
@@ -186,7 +192,7 @@ export function initScene(canvas) {
     for (const node of nodes) {
       const pos = layoutMap.get(node.id) ?? { x: 0, y: 0 };
       const layoutData = { id: node.id, x: pos.x, y: pos.y, asset_url: node.asset_url, status: node.status };
-      const mesh = addNodeMesh(scene, layoutData);
+      const mesh = addNodeMesh(scene, layoutData, { onSelect });
       meshMap.set(node.id, mesh);
     }
 
@@ -215,7 +221,7 @@ export function initScene(canvas) {
   // ------------------------------------------------------------------
   // Resize handling — kept here so the component just passes the canvas
   // ------------------------------------------------------------------
-  const handleResize = () => engine.resize();
+  const handleResize = () => { engine.resize(); updateOrthoBounds(); };
   window.addEventListener("resize", handleResize);
 
   // ------------------------------------------------------------------
@@ -248,9 +254,10 @@ export function initScene(canvas) {
  *
  * @param {Scene} scene
  * @param {{ id: string, x?: number, y?: number, width?: number, height?: number }} nodeData
+ * @param {{ onSelect?: (id: string) => void }} [options={}]
  * @returns {import("@babylonjs/core").Mesh}
  */
-export function addNodeMesh(scene, nodeData) {
+export function addNodeMesh(scene, nodeData, options = {}) {
   const t = computeNodeTransform(nodeData);
 
   // Thin slab — depth=1 is imperceptible in ortho view but avoids the
@@ -286,6 +293,16 @@ export function addNodeMesh(scene, nodeData) {
   }
 
   mesh.material = mat;
+
+  // Wire up click selection if a callback was provided.
+  if (options?.onSelect) {
+    mesh.actionManager = new ActionManager(scene);
+    mesh.actionManager.registerAction(
+      new ExecuteCodeAction(ActionManager.OnPickTrigger, () => {
+        options.onSelect(nodeData.id);
+      })
+    );
+  }
 
   return mesh;
 }

@@ -144,5 +144,13 @@ export function useTreeActions() {
     [dispatch]
   );
 
-  return { loadOrCreateTree, addNode };
+  // selectNode sets the active node ID (null to deselect).
+  const selectNode = useCallback(
+    (id) => {
+      dispatch({ type: ACTIONS.SELECT_NODE, payload: id ?? null });
+    },
+    [dispatch]
+  );
+
+  return { loadOrCreateTree, addNode, selectNode };
 }
