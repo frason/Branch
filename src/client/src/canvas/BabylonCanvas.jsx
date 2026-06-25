@@ -13,9 +13,9 @@
  * returned by initScene — it does not import Babylon directly.
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import { initScene } from "./scene.js";
-import { useTreeStore } from "../state/treeStore.jsx";
+import { useTreeStore, useTreeActions } from "../state/treeStore.jsx";
 
 const styles = {
   wrapper: {
@@ -61,13 +61,21 @@ export function BabylonCanvas({ className }) {
   const sceneRef = useRef(null);
 
   const { nodes, status, error } = useTreeStore();
+  const { selectNode } = useTreeActions();
+
+  const onSelect = useCallback(
+    (nodeId) => {
+      selectNode(nodeId);
+    },
+    [selectNode]
+  );
 
   // Init scene once on mount, dispose on unmount
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const handle = initScene(canvas);
+    const handle = initScene(canvas, { onSelect });
     sceneRef.current = handle;
 
     return () => {

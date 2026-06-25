@@ -11,7 +11,7 @@
 
 /**
  * @typedef {'idle'|'loading'|'ready'|'error'} StoreStatus
- * @typedef {{ tree: object|null, nodes: object[], status: StoreStatus, error: string|null }} StoreState
+ * @typedef {{ tree: object|null, nodes: object[], status: StoreStatus, error: string|null, selectedNodeId: string|null }} StoreState
  */
 
 /** @type {StoreState} */
@@ -20,6 +20,7 @@ export const INITIAL_STATE = {
   nodes: [],
   status: "idle",
   error: null,
+  selectedNodeId: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -32,6 +33,7 @@ export const ACTIONS = /** @type {const} */ ({
   LOAD_ERROR: "LOAD_ERROR",
   ADD_NODE: "ADD_NODE",
   RESET: "RESET",
+  SELECT_NODE: "SELECT_NODE",
 });
 
 // ---------------------------------------------------------------------------
@@ -62,6 +64,9 @@ export function treeReducer(state, action) {
 
     case ACTIONS.RESET:
       return { ...INITIAL_STATE };
+
+    case ACTIONS.SELECT_NODE:
+      return { ...state, selectedNodeId: action.payload ?? null };
 
     default:
       return state;

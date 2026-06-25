@@ -15,6 +15,7 @@ import { BabylonCanvas } from "./canvas/BabylonCanvas.jsx";
 import { GeneratePanel } from "./ui/GeneratePanel.jsx";
 import { BudgetMeter } from "./ui/BudgetMeter.jsx";
 import { KeyPanel } from "./ui/KeyPanel.jsx";
+import { NodeInfoPanel } from "./ui/NodeInfoPanel.jsx";
 import { TreeProvider, useTreeActions } from "./state/treeStore.jsx";
 import { BudgetProvider } from "./budget/budgetStore.jsx";
 
@@ -46,6 +47,7 @@ function AppInner() {
       <KeyPanel />
       <GeneratePanel />
       <BudgetMeter />
+      <NodeInfoPanel />
     </div>
   );
 }
