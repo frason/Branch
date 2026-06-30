@@ -2,7 +2,7 @@
   "paused": false,
   "worker_model": "haiku",
   "karen_model": "sonnet",
-  "max_turns": 25,
+  "max_turns": 40,
   "lead_model": "sonnet",
   "lead_max_turns": 50,
   "lead_paused": false,
