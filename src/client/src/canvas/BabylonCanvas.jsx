@@ -13,7 +13,7 @@
  * returned by initScene — it does not import Babylon directly.
  */
 
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { initScene } from "./scene.js";
 import { useTreeStore, useTreeActions } from "../state/treeStore.jsx";
 
@@ -49,6 +49,21 @@ const styles = {
     background: "rgba(180,30,30,0.75)",
     color: "#fff",
   },
+  autoFrameBtn: {
+    position: "absolute",
+    bottom: "16px",
+    right: "16px",
+    padding: "6px 12px",
+    background: "rgba(255,255,255,0.08)",
+    border: "1px solid rgba(255,255,255,0.15)",
+    borderRadius: "4px",
+    color: "#ccc",
+    fontSize: "12px",
+    fontFamily: "monospace",
+    cursor: "pointer",
+    userSelect: "none",
+    zIndex: 10,
+  },
 };
 
 /**
@@ -69,6 +84,19 @@ export function BabylonCanvas({ className }) {
     },
     [selectNode]
   );
+
+  const handleAutoFrame = useCallback(() => {
+    sceneRef.current?.autoFrame();
+  }, []);
+
+  // `f` key triggers auto-frame when canvas is focused
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (e.key === "f" || e.key === "F") handleAutoFrame();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [handleAutoFrame]);
 
   // Init scene once on mount, dispose on unmount
   useEffect(() => {
@@ -119,6 +147,13 @@ export function BabylonCanvas({ className }) {
           {error ? `: ${error}` : ""}
         </div>
       )}
+      <button
+        style={styles.autoFrameBtn}
+        onClick={handleAutoFrame}
+        title="Fit all nodes (F)"
+      >
+        ⊡ fit
+      </button>
     </div>
   );
 }
