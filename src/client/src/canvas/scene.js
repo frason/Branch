@@ -32,7 +32,7 @@ import {
 } from "@babylonjs/core";
 // Color3 is used for node materials; Color4 used for scene clear and line colors.
 
-import { computeNodeTransform, computeTreeLayout, NODE_DEFAULTS } from "./nodeHelpers.js";
+import { computeNodeTransform, computeTreeLayout, computeOrthoFrustum, NODE_DEFAULTS } from "./nodeHelpers.js";
 
 // ---------------------------------------------------------------------------
 // Placeholder (fallback) node shown when the API is unreachable
@@ -111,7 +111,7 @@ export function initScene(canvas, { onSelect } = {}) {
   }
   updateOrthoBounds();
 
-  // Do NOT attach user controls — pan/zoom will be wired explicitly later.
+  // Do NOT attach user controls — pan/zoom is handled via explicit pointer/wheel events below.
 
   // ------------------------------------------------------------------
   // Light — a simple ambient so the placeholder colour reads cleanly
@@ -130,6 +130,135 @@ export function initScene(canvas, { onSelect } = {}) {
   //   instance.position.set(x, y, 0);
   // That shares one geometry buffer on the GPU instead of N buffers.
   // ------------------------------------------------------------------
+
+  // ------------------------------------------------------------------
+  // Camera movement API — pan, zoom, autoFrame
+  //
+  // All three mutate orthoLeft/Right/Top/Bottom directly. Exposing them
+  // as named functions lets BabylonCanvas wire them to pointer/wheel events
+  // AND lets future keyboard-shortcut code (#58) call the same functions
+  // without duplicating the math.
+  //
+  // Zoom limits (in world units visible across the width):
+  //   MIN_VIEW_WIDTH = 200  → maximum zoom-in  (~2× a single node)
+  //   MAX_VIEW_WIDTH = 8000 → maximum zoom-out (very wide tree)
+  // ------------------------------------------------------------------
+  const MIN_VIEW_WIDTH = 200;
+  const MAX_VIEW_WIDTH = 8000;
+
+  // Tracks layout nodes so autoFrame can use current positions.
+  let currentLayoutNodes = [];
+
+  /**
+   * Pan the camera by (dx, dy) screen pixels.
+   * Converts pixel delta to world-space delta using current frustum size.
+   *
+   * @param {number} dx  positive = pan right
+   * @param {number} dy  positive = pan up (screen y-down → world y-up inversion)
+   */
+  function pan(dx, dy) {
+    const w = canvas.clientWidth  || 1;
+    const h = canvas.clientHeight || 1;
+    const scaleX = (camera.orthoRight - camera.orthoLeft) / w;
+    const scaleY = (camera.orthoTop   - camera.orthoBottom) / h;
+    camera.orthoLeft   -= dx * scaleX;
+    camera.orthoRight  -= dx * scaleX;
+    // Screen y is flipped relative to world y
+    camera.orthoTop    += dy * scaleY;
+    camera.orthoBottom += dy * scaleY;
+  }
+
+  /**
+   * Zoom by a scale factor around a screen-space pivot point.
+   * factor > 1 zooms out, factor < 1 zooms in.
+   *
+   * @param {number} factor    multiplier for the current view size
+   * @param {number} pivotX    canvas-relative X pixel (default: canvas center)
+   * @param {number} pivotY    canvas-relative Y pixel (default: canvas center)
+   */
+  function zoom(factor, pivotX, pivotY) {
+    const w = canvas.clientWidth  || 1;
+    const h = canvas.clientHeight || 1;
+    const cx = pivotX ?? w / 2;
+    const cy = pivotY ?? h / 2;
+
+    // Convert pivot from screen space to world space
+    const worldCX = camera.orthoLeft + (cx / w) * (camera.orthoRight - camera.orthoLeft);
+    const worldCY = camera.orthoTop  - (cy / h) * (camera.orthoTop   - camera.orthoBottom);
+
+    // Clamp so we don't zoom past the limits
+    const currentWidth = camera.orthoRight - camera.orthoLeft;
+    const clampedFactor = Math.min(
+      Math.max(factor, MIN_VIEW_WIDTH / currentWidth),
+      MAX_VIEW_WIDTH / currentWidth
+    );
+
+    camera.orthoLeft   = worldCX + (camera.orthoLeft   - worldCX) * clampedFactor;
+    camera.orthoRight  = worldCX + (camera.orthoRight  - worldCX) * clampedFactor;
+    camera.orthoTop    = worldCY + (camera.orthoTop    - worldCY) * clampedFactor;
+    camera.orthoBottom = worldCY + (camera.orthoBottom - worldCY) * clampedFactor;
+  }
+
+  /**
+   * Fit all current nodes into view with padding.
+   * Falls back to the default view when no nodes are loaded.
+   */
+  function autoFrame() {
+    const bounds = computeOrthoFrustum(currentLayoutNodes);
+    camera.orthoLeft   = bounds.left;
+    camera.orthoRight  = bounds.right;
+    camera.orthoTop    = bounds.top;
+    camera.orthoBottom = bounds.bottom;
+  }
+
+  // ------------------------------------------------------------------
+  // Pointer events for pan (drag) + wheel for zoom
+  // ------------------------------------------------------------------
+  let isPanning = false;
+  let lastPX = 0;
+  let lastPY = 0;
+
+  function onPointerDown(e) {
+    // Only pan on primary button; leave right-click / middle-click alone
+    if (e.button !== 0) return;
+    isPanning = true;
+    lastPX = e.clientX;
+    lastPY = e.clientY;
+    canvas.setPointerCapture(e.pointerId);
+  }
+
+  function onPointerMove(e) {
+    if (!isPanning) return;
+    pan(e.clientX - lastPX, e.clientY - lastPY);
+    lastPX = e.clientX;
+    lastPY = e.clientY;
+  }
+
+  function onPointerUp(e) {
+    if (!isPanning) return;
+    isPanning = false;
+    canvas.releasePointerCapture(e.pointerId);
+  }
+
+  function onWheel(e) {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const pivotX = e.clientX - rect.left;
+    const pivotY = e.clientY - rect.top;
+    // ctrlKey = trackpad pinch on macOS (reported as ctrl+wheel)
+    // Regular scroll: deltaY ~100 per notch; pinch: smaller deltas
+    const SENSITIVITY = 0.001;
+    const rawDelta = e.ctrlKey ? e.deltaY * 3 : e.deltaY;
+    const factor = 1 + rawDelta * SENSITIVITY;
+    zoom(factor, pivotX, pivotY);
+  }
+
+  canvas.addEventListener("pointerdown",  onPointerDown);
+  canvas.addEventListener("pointermove",  onPointerMove);
+  canvas.addEventListener("pointerup",    onPointerUp);
+  canvas.addEventListener("pointercancel",onPointerUp);
+  // passive: false so we can call preventDefault() and stop page scroll
+  canvas.addEventListener("wheel", onWheel, { passive: false });
 
   /** @type {Map<string, import("@babylonjs/core").Mesh>} */
   const meshMap = new Map();
@@ -188,6 +317,12 @@ export function initScene(canvas, { onSelect } = {}) {
     // Each entry in layoutMap is { x, y } in world space.
     const layoutMap = computeTreeLayout(nodes);
 
+    // Keep a flat list of positioned nodes so autoFrame always has current positions.
+    currentLayoutNodes = nodes.map((n) => {
+      const pos = layoutMap.get(n.id) ?? { x: 0, y: 0 };
+      return { ...n, x: pos.x, y: pos.y };
+    });
+
     // Render node cards
     for (const node of nodes) {
       const pos = layoutMap.get(node.id) ?? { x: 0, y: 0 };
@@ -229,8 +364,16 @@ export function initScene(canvas, { onSelect } = {}) {
   // ------------------------------------------------------------------
   return {
     setNodes,
+    pan,
+    zoom,
+    autoFrame,
     dispose() {
       window.removeEventListener("resize", handleResize);
+      canvas.removeEventListener("pointerdown",   onPointerDown);
+      canvas.removeEventListener("pointermove",   onPointerMove);
+      canvas.removeEventListener("pointerup",     onPointerUp);
+      canvas.removeEventListener("pointercancel", onPointerUp);
+      canvas.removeEventListener("wheel",         onWheel);
       engine.stopRenderLoop();
       clearNodeMeshes();
       clearEdgeMeshes();
